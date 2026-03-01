@@ -1,0 +1,21 @@
+# --- 多智能体编排与大模型交互 ---
+langchain>=0.1.0
+langgraph>=0.0.26      # 核心：用于构建多 Agent 的状态机编排
+langchain-openai       # 如果使用 OpenAI 接口
+langchain-google-genai # 如果调用 Google Gemini 接口
+pydantic>=2.0.0        # 用于强制约束 Agent 结构化 JSON 输出
+
+# --- 后端 API 服务 ---
+fastapi>=0.100.0       # 高性能异步 API 框架，完美契合 Agent 的异步调用
+uvicorn>=0.23.0        # FastAPI 的 ASGI 服务器
+
+# --- 数据持久层 (PostgreSQL) ---
+sqlalchemy>=2.0.0      # 核心 ORM 框架，管理复杂的关系型数据
+psycopg2-binary>=2.9.0 # PostgreSQL 的 Python 驱动
+
+# --- 核心工程计算辅助 ---
+numpy>=1.24.0          # 用于后续的 Monte Carlo 风险模拟矩阵计算
+pandas>=2.0.0          # 用于处理资源直方图和 S 曲线数据聚合
+
+# --- 环境变量与辅助工具 ---
+python-dotenv>=1.0.0   # 管理数据库密码、API Key 等本地环境变量

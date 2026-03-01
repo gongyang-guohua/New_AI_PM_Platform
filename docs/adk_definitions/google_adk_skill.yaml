@@ -1,0 +1,72 @@
+name: projectmaster_agent
+version: 1.0.0
+description: Engineering-grade AI project management skill with CPM scheduling, resource optimization, and cost intelligence.
+
+author: ProjectMaster
+
+inputs:
+  - name: project_data
+    type: object
+    description: Full project dataset including WBS, activities, resources, and costs.
+
+outputs:
+  - name: schedule_analysis
+    type: object
+    description: Calculated CPM schedule results including critical path and float values.
+  - name: resource_analysis
+    type: object
+    description: Resource histogram and conflict report.
+  - name: cost_analysis
+    type: object
+    description: Earned value metrics and forecasted EAC.
+  - name: risk_report
+    type: object
+    description: Risk probability and mitigation suggestions.
+
+capabilities:
+  - cpm_calculation
+  - critical_path_detection
+  - resource_leveling
+  - earned_value_management
+  - monte_carlo_simulation
+  - risk_prediction
+
+execution:
+  mode: hybrid
+  deterministic_engine: true
+  ai_enhancement: true
+
+modules:
+  wbs_skill:
+    enabled: true
+    auto_generate: true
+    cost_rollup: true
+
+  schedule_engine:
+    enabled: true
+    forward_pass: true
+    backward_pass: true
+    constraint_support: true
+
+  resource_optimization:
+    enabled: true
+    leveling: true
+    bottleneck_detection: true
+
+  cost_intelligence:
+    enabled: true
+    evm: true
+    cashflow_forecast: true
+
+  risk_prediction:
+    enabled: true
+    monte_carlo: true
+    delay_probability: true
+
+security:
+  data_scope: project_level
+  role_based_access: true
+
+logging:
+  level: info
+  audit_trail: true
