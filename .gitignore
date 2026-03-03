@@ -1,7 +1,34 @@
+# Environment
 .env
 .env.local
 .env.example
-node_modules
-yarn-error.log
-yarn.lock
-package-lock.json
+
+# Node / Frontend
+node_modules/
+dist/
+dist-ssr/
+*.local
+frontend/dist/
+frontend/node_modules/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.venv/
+venv/
+env/
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+test_out.txt
