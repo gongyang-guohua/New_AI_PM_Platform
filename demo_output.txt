@@ -1,0 +1,21 @@
+=== Initializing Local SQLite Database ===
+=== Setting up Mock EPC Project ===
+=== Creating Activities ===
+=== Wiring up Dependencies (The Network Graph) ===
+=== Triggering the CPM Math Engine ===
+
+Engine Status: SUCCESS
+Message: Schedule Engine calculation applied to database
+Critical Path Activity IDs (DB IDs): ['1', '5']
+
++------------------------------------------------------------------------------------------------+
+| Act ID     | Name                 | Total Float  | Early Start  | Early Finish | Critical?  |
++------------------------------------------------------------------------------------------------+
+| ENG-01     | Foundation Design    | 0.0 d        | 2026-04-01   | 2026-04-13   | YES        |
+| CON-01     | Site Excavation      | 28.0 d       | 2026-04-01   | 2026-04-06   | NO         |
+| ENG-02     | Procure Rebar        | 2.0 d        | 2026-04-13   | 2026-05-04   | NO         |
+| CON-02     | Pour Concrete        | 2.0 d        | 2026-05-04   | 2026-05-15   | NO         |
+| CON-03     | Curing               | 0.0 d        | 2026-05-15   | 2026-05-18   | YES        |
++------------------------------------------------------------------------------------------------+
+
+Demo Completed Successfully!

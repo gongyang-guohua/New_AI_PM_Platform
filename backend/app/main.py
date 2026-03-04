@@ -1,8 +1,17 @@
 # backend/app/main.py
 from fastapi import FastAPI
-from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+
 from app.api.agent_chat import router as agent_router
+from app.api.activities import router as activities_router
+from app.api.dependencies import router as dependencies_router
+from app.api.engine import router as engine_router
+
+import app.db.models
+from app.db.session import engine
+
+# Create tables if not running Alembic migrations in local
+app.db.models.Base.metadata.create_all(bind=engine)
 
 app = FastAPI(
     title="ProjectMaster AI Platform",
@@ -21,6 +30,12 @@ app.add_middleware(
 
 # Registries
 app.include_router(agent_router, prefix="/api/v1")
+from app.api.activities import router as activities_router
+app.include_router(activities_router, prefix="/api/v1")
+from app.api.dependencies import router as dependencies_router
+app.include_router(dependencies_router, prefix="/api/v1")
+from app.api.engine import router as engine_router
+app.include_router(engine_router, prefix="/api/v1")
 
 @app.get("/")
 async def root():
