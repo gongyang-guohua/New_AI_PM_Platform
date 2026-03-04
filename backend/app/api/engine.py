@@ -6,7 +6,140 @@ from app.db import models
 from app.api import schemas
 from app.api.deps import get_db
 
+import sys
+import os
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../")))
+from core_engine.schedule.cpm_engine import CPMEngine, MonteCarloEngine, Activity as CPMActivity, Relationship as CPMRelationship
+
+# Import our new stateless schemas and AI Gateway
+import app.api.schemas_engine as engine_schemas
+from app.services.llm_gateway import llm_gateway
+
 router = APIRouter(prefix="/engine", tags=["Engine Orchestration"])
+
+# ---------------------------------------------
+# 1. STATELESS MICROSERVICE ENDPOINTS (NEW)
+# ---------------------------------------------
+
+@router.post("/cpm/calculate", response_model=engine_schemas.CPMResponse)
+def calculate_cpm_stateless(payload: engine_schemas.CPMRequestBody):
+    """
+    Stateless Endpoint: Runs deterministic CPM scheduling and returns results.
+    Can be called by Node.js or any other services by passing standard JSON.
+    """
+    # 1. Map DTO to Engine Models
+    cpm_activities = {}
+    for act in payload.activities:
+        cpm_activities[act.id] = CPMActivity(
+            id=act.id,
+            duration=act.duration,
+            constraint_type=act.constraint_type,
+            constraint_date=act.constraint_date
+        )
+        
+    cpm_relationships = []
+    for rel in payload.relationships:
+        cpm_relationships.append(
+            CPMRelationship(
+                predecessor=rel.predecessor,
+                successor=rel.successor,
+                relation_type=rel.relation_type,
+                lag=rel.lag
+            )
+        )
+        
+    # 2. Execute Calculation
+    try:
+        engine = CPMEngine(activities=cpm_activities, relationships=cpm_relationships)
+        critical_path = engine.run()
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"CPM Calculation failed: {str(e)}")
+        
+    # 3. Format Response
+    project_duration = max(a.EF for a in engine.activities.values()) if engine.activities else 0
+    
+    result_activities = []
+    for act_id, act in engine.activities.items():
+        result_activities.append(
+            engine_schemas.CPMResultActivity(
+                id=act.id,
+                early_start=act.ES,
+                early_finish=act.EF,
+                late_start=act.LS,
+                late_finish=act.LF,
+                total_float=act.total_float,
+                free_float=act.free_float,
+                is_critical=act.id in critical_path
+            )
+        )
+        
+    # 4. AI Insight Generation (if requested)
+    ai_insights = None
+    if payload.with_ai_insights:
+        negative_float_tasks = [act.id for act in result_activities if act.total_float < 0]
+        sys_prompt = "You are a senior Project Controls Manager. Analyze the schedule and provide actionable advice in Chinese. Be extremely concise. Output JSON format if possible, otherwise plain text."
+        user_prompt = f"Project duration is {project_duration} days. Critical Path: {critical_path}. Tasks with negative float: {negative_float_tasks}. Please provide 2 short bullet points on crashing/accelerating the schedule."
+        
+        # Call the LLM Gateway
+        ai_insights = llm_gateway.generate_insight(sys_prompt, user_prompt, json_mode=False)
+
+    return engine_schemas.CPMResponse(
+        project_duration=project_duration,
+        activities=result_activities,
+        critical_path=critical_path,
+        ai_insights=ai_insights
+    )
+
+
+@router.post("/cpm/monte-carlo", response_model=engine_schemas.MonteCarloResponse)
+def run_monte_carlo_stateless(payload: engine_schemas.CPMRequestBody, iterations: int = 1000):
+    """
+    Stateless Endpoint: Runs Monte Carlo / PERT simulation for schedule risk analysis.
+    """
+    cpm_activities = {}
+    for act in payload.activities:
+        cpm_activities[act.id] = CPMActivity(
+            id=act.id,
+            duration=act.duration,
+            optimistic_duration=act.optimistic_duration,
+            most_likely_duration=act.most_likely_duration,
+            pessimistic_duration=act.pessimistic_duration
+        )
+        
+    cpm_relationships = []
+    for rel in payload.relationships:
+        cpm_relationships.append(CPMRelationship(predecessor=rel.predecessor, successor=rel.successor, relation_type=rel.relation_type, lag=rel.lag))
+        
+    try:
+        mc_engine = MonteCarloEngine(activities=cpm_activities, relationships=cpm_relationships)
+        results = mc_engine.simulate(iterations=iterations)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Monte Carlo simulation failed: {str(e)}")
+
+    # Construct insight request via LLM
+    ai_insights = None
+    if payload.with_ai_insights:
+        high_risk_tasks = [k for k, v in results['criticality_index'].items() if v > 0.6]
+        sys_prompt = "你是一位精通工程管理风险分析的 AI 顾问。请用简洁的专业的中文指出项目中最大的进度风险点。"
+        user_prompt = f"蒙特卡洛分析结果: P50工期={results['p50_duration']}, P80工期={results['p80_duration']}。在1000次模拟中，经常出现在关键路径上的高频节点有: {high_risk_tasks}。请作简短的中文预警提示。"
+        
+        ai_insights = llm_gateway.generate_insight(sys_prompt, user_prompt, json_mode=False)
+
+    return engine_schemas.MonteCarloResponse(
+        p50_duration=results["p50_duration"],
+        p80_duration=results["p80_duration"],
+        p95_duration=results["p95_duration"],
+        mean_duration=results["mean_duration"],
+        min_duration=results["min_duration"],
+        max_duration=results["max_duration"],
+        criticality_index=results["criticality_index"],
+        ai_insights=ai_insights
+    )
+
+
+# ---------------------------------------------
+# 2. STATEFUL DATABASE ENDPOINTS (LEGACY)
+# ---------------------------------------------
 
 @router.post("/schedule/run/{project_id}")
 def run_schedule_engine(project_id: int, db: Session = Depends(get_db)):

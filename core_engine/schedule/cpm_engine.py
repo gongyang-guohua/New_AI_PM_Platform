@@ -21,8 +21,13 @@ from typing import Dict, List, Tuple, Optional
 class Activity:
     id: str
     duration: int
-    constraint_type: Optional[str] = None
+    constraint_type: Optional[str] = None # SNET, FNLT, MSO, MFO
     constraint_date: Optional[int] = None
+    
+    # PERT/Monte Carlo properties
+    optimistic_duration: Optional[int] = None
+    most_likely_duration: Optional[int] = None
+    pessimistic_duration: Optional[int] = None
 
     # Computed fields
     ES: int = 0
@@ -170,8 +175,17 @@ class CPMEngine:
 
                 max_es = max(max_es, candidate)
 
+            # --- Constraint Handling (Forward Pass) ---
+            if activity.constraint_type in ("SNET", "MSO") and activity.constraint_date is not None:
+                max_es = max(max_es, activity.constraint_date)
+
             activity.ES = max_es
             activity.EF = self.calendar.add_working_time(activity.ES, activity.duration)
+
+            # MFO forward pass overriding (violates logic to force finish, primarily verified in backward)
+            if activity.constraint_type == "MFO" and activity.constraint_date is not None:
+                activity.EF = activity.constraint_date
+                activity.ES = max(0, activity.EF - activity.duration)  # Simplified adjustment
 
     # -----------------------------
     # Backward Pass (Calendar Aware)
@@ -184,14 +198,24 @@ class CPMEngine:
             activity = self.activities[act_id]
 
             if not self.graph[act_id]:
-                activity.LF = project_finish
+                min_lf = project_finish
             else:
                 min_lf = float("inf")
                 for rel in self.graph[act_id]:
                     succ = self.activities[rel.successor]
                     candidate = succ.LS - rel.lag
                     min_lf = min(min_lf, candidate)
-                activity.LF = min_lf
+                
+            # --- Constraint Handling (Backward Pass) ---
+            if activity.constraint_type in ("FNLT", "MFO") and activity.constraint_date is not None:
+                if not self.graph[act_id]:
+                    min_lf = activity.constraint_date
+                else:
+                    min_lf = min(min_lf, activity.constraint_date)
+            elif activity.constraint_type == "MSO" and activity.constraint_date is not None:
+                min_lf = min(min_lf, activity.constraint_date + activity.duration)
+                
+            activity.LF = min_lf
 
             # Reverse calculate LS using calendar
             # Simplified approximation: step backwards counting working days
@@ -364,3 +388,75 @@ class ResourceDrivenScheduler:
 
 
 # End of Resource-Driven CPM Engine
+
+
+# -----------------------------
+# Monte Carlo / PERT Engine
+# -----------------------------
+import random
+import statistics
+
+class MonteCarloEngine:
+    """
+    Stochastic tracking engine for calculating Project Completion Probabilities
+    and Criticality Indices via Monte Carlo simulation
+    """
+
+    def __init__(self, activities: Dict[str, Activity], relationships: List[Relationship], calendar: WorkCalendar = None):
+        self.original_activities = activities
+        self.relationships = relationships
+        self.calendar = calendar if calendar else WorkCalendar()
+
+    def _sample_duration(self, act: Activity) -> int:
+        """Sample duration using Triangular Distribution if PERT data exists"""
+        if all(x is not None for x in [act.optimistic_duration, act.most_likely_duration, act.pessimistic_duration]):
+            # Triangular distribution (native random): low, high, mode
+            sample = random.triangular(act.optimistic_duration, act.pessimistic_duration, act.most_likely_duration)
+            return max(1, int(round(sample)))  # Minimum 1 unit of work
+        return act.duration
+
+    def simulate(self, iterations: int = 1000) -> Dict:
+        project_durations = []
+        criticality_counts = defaultdict(int)
+
+        for _ in range(iterations):
+            # Create a localized deep-copy equivalent for iteration speed
+            sim_activities = {}
+            for k, v in self.original_activities.items():
+                sampled_d = self._sample_duration(v)
+                sim_activities[k] = Activity(
+                    id=v.id,
+                    duration=sampled_d,
+                    constraint_type=v.constraint_type,
+                    constraint_date=v.constraint_date
+                )
+
+            # Fire off deterministic engine
+            cpm = CPMEngine(activities=sim_activities, relationships=self.relationships, calendar=self.calendar)
+            
+            try:
+                critical_path = cpm.run()
+                finish_date = max(a.EF for a in cpm.activities.values())
+                project_durations.append(finish_date)
+                
+                for node_id in critical_path:
+                    criticality_counts[node_id] += 1
+            except Exception:
+                # E.g. circular dependency shouldn't happen dynamically but handled safely
+                continue
+
+        if not project_durations:
+            raise Exception("Simulation failed to produce results")
+
+        project_durations.sort()
+        
+        # Calculate summary statistics using standard library
+        return {
+            "p50_duration": project_durations[int(len(project_durations) * 0.50)],
+            "p80_duration": project_durations[int(len(project_durations) * 0.80)],
+            "p95_duration": project_durations[int(len(project_durations) * 0.95)],
+            "mean_duration": statistics.mean(project_durations),
+            "min_duration": min(project_durations),
+            "max_duration": max(project_durations),
+            "criticality_index": {k: float(v) / iterations for k, v in criticality_counts.items()}
+        }

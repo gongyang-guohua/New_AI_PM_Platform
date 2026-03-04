@@ -1,125 +1,84 @@
 # ai_agents/master_agent/router.py
-import json
-from typing import Dict, Any, List
+import os
+from typing import Literal
+from langchain_core.messages import SystemMessage, HumanMessage
 from langgraph.graph import StateGraph, START, END
+from langgraph.prebuilt import ToolNode
+from langchain_openai import ChatOpenAI
+
 from ai_agents.state import AgentState
+from ai_agents.tools.schedule_tools import calculate_cpm_schedule, run_monte_carlo_simulation
+from ai_agents.tools.project_planning_tool import generate_project_plan
 from ai_agents.master_agent.prompts import MASTER_AGENT_SYSTEM_PROMPT
-from ai_agents.llm_gateway import LLMGateway
 
 class MasterRouter:
     """
     ProjectMaster LangGraph Orchestrator. 
-    Interprets user intent and routes to sub-agents (Schedule, WBS, Resource).
+    Uses Tool Calling and StateGraph to act as an autonomous project management assistant.
     """
     def __init__(self):
-        self.llm = LLMGateway()
+        # Configure LLM supporting Tool Calling (bind_tools)
+        # We use standard ChatOpenAI wrapper and point it to the Kimi (Moonshot) API 
+        # which acts nicely as a very smart Chinese orchestrator with tool support.
+        # Fallback to local could be handled similarly via changing base_url.
+        api_key = os.getenv("MOONSHOT_API_KEY", "dummy-key")
+        self.llm = ChatOpenAI(
+            model="moonshot-v1-8k",
+            api_key=api_key,
+            base_url="https://api.moonshot.cn/v1",
+            temperature=0.1
+        )
+        
+        # Tools available to the agent
+        self.tools = [generate_project_plan, calculate_cpm_schedule, run_monte_carlo_simulation]
+        self.llm_with_tools = self.llm.bind_tools(self.tools)
+        
         self._build_graph()
+
+    def _should_continue(self, state: AgentState) -> Literal["tools", "__end__"]:
+        """Decide whether to call tools or end."""
+        last_message = state["messages"][-1]
+        
+        # If the LLM generates tool_calls, route to the tool node
+        if hasattr(last_message, "tool_calls") and last_message.tool_calls:
+            return "tools"
+        
+        return "__end__"
+
+    def _call_model(self, state: AgentState):
+        """Invoke the LLM brain to decide the next action or to reply."""
+        messages = state["messages"]
+        response = self.llm_with_tools.invoke(messages)
+        return {"messages": [response]}
 
     def _build_graph(self):
         builder = StateGraph(AgentState)
-
-        # Map nodes
-        builder.add_node("intent_recognition", self._node_recognize_intent)
-        builder.add_node("plan_execution", self._node_execute_plan)
-        builder.add_node("human_fallback", self._node_fallback_to_human)
         
-        # Define edges
-        builder.add_edge(START, "intent_recognition")
+        # Nodes
+        builder.add_node("agent", self._call_model)
+        tool_node = ToolNode(self.tools)
+        builder.add_node("tools", tool_node)
         
-        # Conditional Edge routing
-        builder.add_conditional_edges(
-            "intent_recognition",
-            self._route_intent,
-            {
-                "execute": "plan_execution",
-                "missing_info": "human_fallback"
-            }
-        )
-
-        builder.add_edge("plan_execution", END)
-        builder.add_edge("human_fallback", END)
-
+        # Edges
+        builder.add_edge(START, "agent")
+        builder.add_conditional_edges("agent", self._should_continue)
+        builder.add_edge("tools", "agent")
+        
+        # Compile graph
         self.graph = builder.compile()
 
-    def _node_recognize_intent(self, state: AgentState) -> Dict[str, Any]:
-        """Uses LLM to classify user message according to prompt JSON schema."""
-        messages = [
-            {"role": "system", "content": MASTER_AGENT_SYSTEM_PROMPT},
-        ]
-        messages.extend(state.get("messages", []))
-
-        # Explicitly ask LLM for JSON format as required by prompt
-        response_text = self.llm.chat_completion(
-             messages=messages, 
-             temperature=0.1
-        )
-        
-        try:
-            # Clean possible markdown wrap ` ```json `
-            json_text = response_text.replace('```json', '').replace('```', '').strip()
-            parsed_intent = json.loads(json_text)
+    def process_message(self, user_text: str, current_messages: list = None) -> list:
+        """
+        Processes a single user message against the agent graph. 
+        Maintains conversational context via current_messages.
+        """
+        if current_messages is None or len(current_messages) == 0:
+            current_messages = [SystemMessage(content=MASTER_AGENT_SYSTEM_PROMPT)]
             
-            return {
-                "current_intent": parsed_intent.get("intent_summary", "Unknown"),
-                "requires_multi_step": parsed_intent.get("requires_multi_step", False),
-                "execution_plan": parsed_intent.get("execution_plan", []),
-                "context_data": {
-                    "missing_information": parsed_intent.get("missing_information", []),
-                    "reply": parsed_intent.get("reply_to_user", "")
-                }
-            }
-        except json.JSONDecodeError:
-             return {
-                 "context_data": {
-                     "missing_information": [],
-                     "reply": f"Internal Error: Failed to parse Agent Intent JSON. Raw: {response_text}"
-                 }
-             }
-
-    def _route_intent(self, state: AgentState) -> str:
-        """Determines next node based on identified intent properties."""
-        context = state.get("context_data", {})
-        if context.get("missing_information"):
-            return "missing_info"
+        current_messages.append(HumanMessage(content=user_text))
         
-        if state.get("execution_plan"):
-             return "execute"
-             
-        # Ultimate fallback
-        return "missing_info"
-
-    def _node_execute_plan(self, state: AgentState) -> Dict[str, Any]:
-        """Executes the sub-agents sequentially. (Placeholder for now)"""
-        plan = state.get("execution_plan", [])
-        results = f"Simulated Execution of {len(plan)} steps.\n"
-        
-        for step in plan:
-             results += f"- Executed {step.get('target_agent')} for action: {step.get('action')}\n"
-             
-        return {
-            "final_response": results
-        }
-        
-    def _node_fallback_to_human(self, state: AgentState) -> Dict[str, Any]:
-        """Returns the clarifying questions generated by the LLM."""
-        reply = state.get("context_data", {}).get("reply", "I lack some context to proceed.")
-        return {
-            "final_response": reply
-        }
-
-    def process(self, messages: List[Dict[str, str]]) -> str:
-        """Entrypoint for the API router to call."""
-        initial_state: AgentState = {
-            "messages": messages,
-            "project_id": "DEFAULT",
-            "current_intent": "",
-            "requires_multi_step": False,
-            "execution_plan": [],
-            "current_step_index": 0,
-            "context_data": {},
-            "final_response": ""
-        }
-        
-        # Invoke LangGraph
+        initial_state = {"messages": current_messages}
         final_state = self.graph.invoke(initial_state)
-        return final_state.get("final_response", "No response generated.")
+        
+        # Return the resulting message list updated by the graph iteration
+        return final_state["messages"]
